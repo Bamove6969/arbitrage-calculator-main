@@ -53,7 +53,7 @@ class LogRingBuffer(logging.Handler):
 # Attach the ring buffer to the root logger so it catches all logs
 memory_handler = LogRingBuffer(maxlen=200)
 
-from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi import FastAPI, Query, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -68,6 +68,50 @@ from backend import whale_tracker, weather_edge
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Arbitrage Scanner API")
+
+# ===========================================
+# WebSocket Connection Manager
+# ===========================================
+class WSConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        logger.info(f"WebSocket connected. Active: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+        logger.info(f"WebSocket disconnected. Active: {len(self.active_connections)}")
+
+    async def broadcast(self, message: dict):
+        for conn in self.active_connections:
+            try:
+                await conn.send_json(message)
+            except Exception as e:
+                logger.warning(f"WS broadcast failed: {e}")
+
+ws_manager = WSConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            # Handle commands from client
+            msg = json.loads(data)
+            if msg.get("type") == "ping":
+                await websocket.send_json({"type": "pong", "time": datetime.now().isoformat()})
+            elif msg.get("type") == "subscribe":
+                await websocket.send_json({"type": "subscribed", "channels": ["scan", "matches"]})
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+# Helper to broadcast from anywhere
+async def broadcast_scan_update(event: str, data: dict):
+    await ws_manager.broadcast({"event": event, "data": data, "time": datetime.now().isoformat()})
 
 @app.on_event("startup")
 async def startup():
@@ -174,6 +218,7 @@ async def serve_raw_markets():
 @app.post("/api/cloud-results")
 async def receive_cloud_results(results: List[Dict[str, Any]], clear: bool = Query(True)):
     """Receives parsed and matched arbitrage pairs from the Cloud GPU notebook.
+    Runs LLM verification to filter to only exact matches.
     
     Args:
         results: The matched pairs to import.
@@ -181,10 +226,17 @@ async def receive_cloud_results(results: List[Dict[str, Any]], clear: bool = Que
                Set to False when sending multiple additive batches.
     """
     from backend.scanner import set_cloud_results
+    from backend.llm_verifier import run_llm_verification
     
+    # Store the fuzzy matches
     set_cloud_results(results, clear=clear)
     
-    return {"status": "success", "imported": len(results)}
+    # Run LLM verification in background
+    import nest_asyncio
+    nest_asyncio.apply()
+    asyncio.create_task(run_llm_verification(results[:2000]))
+    
+    return {"status": "success", "imported": len(results), "llm_verifying": True}
 
 
 @app.get("/api/scanner-config")
@@ -263,8 +315,14 @@ async def get_opportunities(
     platforms: Optional[str] = None,
     page: int = Query(1, ge=1, le=10),
     limit: int = Query(300, ge=1, le=1000),
+    llm_verified: bool = False,
 ):
-    opps = get_cached_opportunities()
+    from backend.llm_verifier import get_llm_verified_matches
+    
+    if llm_verified:
+        opps = get_llm_verified_matches()
+    else:
+        opps = get_cached_opportunities()
 
     if q:
         q_lower = q.lower()

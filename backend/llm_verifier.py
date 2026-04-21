@@ -41,7 +41,7 @@ Are these prediction markets about the SAME event? Answer: YES or NO. Confidence
 async def verify_matches_with_llm(
     matches: List[Dict[str, Any]], 
     model: str = "qwen3.6:35b",
-    max_workers: int = 8
+    max_workers: int = 4
 ) -> List[Dict[str, Any]]:
     """Verifies a batch of matches using Ollama LLM in parallel."""
     

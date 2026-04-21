@@ -147,7 +147,7 @@ def set_cloud_results(results: List[Dict[str, Any]], clear: bool = True):
     
     _all_opportunities.extend(top_k)
     
-scan_state["progress"] = 100
+    scan_state["progress"] = 100
     scan_state["phase"] = "Cloud match complete"
     scan_state["status"] = "complete"
     scan_state["message"] = f"Cloud GPU found {len(top_k)} top-tier opportunities!"

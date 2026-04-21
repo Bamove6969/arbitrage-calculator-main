@@ -1,0 +1,56 @@
+version: '3.8'
+
+services:
+  # IB Gateway (existing - don't change)
+  ibga:
+    image: heshiming/ibga
+    container_name: ibga-trading
+    restart: always
+    ipc: host
+    shm_size: 512mb
+    dns: 8.8.8.8
+    environment:
+      - TERM=xterm
+      - IB_USERNAME=fiend6969
+      - IB_PASSWORD=fj4T-U4FnouobkzN-UL7
+      - IB_REGION=America
+      - IB_TIMEZONE=America/Vancouver
+      - IB_LOGINTAB=IB API
+      - IB_LOGINTYPE=Live Trading
+      - IB_PREFER_IBKEY=true
+    volumes:
+      - ./data:/home/ibg_settings
+    ports:
+      - "15800:5800"
+      - "4000:4000"
+      - "4001:4001"
+      - "4002:4002"
+    networks:
+      - arbitrage-net
+
+  # Arbitrage Backend
+  arbitrage-backend:
+    build: .
+    container_name: arbitrage-backend
+    restart: always
+    environment:
+      - PYTHONPATH=/app
+      - IB_GATEWAY_URL=http://ibga:4000
+    ports:
+      - "8001:8000"
+    depends_on:
+      - ibga
+    networks:
+      - arbitrage-net
+
+  # Optional: Dashboard (uncomment to enable)
+  # dashboard:
+  #   build: ./client
+  #   ports:
+  #     - "5000:5000"
+  #   depends_on:
+  #     - arbitrage-backend
+
+networks:
+  arbitrage-net:
+    driver: bridge

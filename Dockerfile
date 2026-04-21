@@ -1,5 +1,5 @@
-# Use slim to keep the image small
-FROM python:3.11-slim
+# Base - Python for app
+FROM python:3.11-slim AS app
 
 WORKDIR /app
 
@@ -33,3 +33,8 @@ ENV IB_GATEWAY_URL=http://ibga:4000
 
 # Run the app
 CMD ["python", "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# ===========================================
+# Ollama Service (separate container)
+# Run separately: docker run -d -v ollama:/root/.ollama -p 11434:11434 --name ollama ollama/serve
+# ===========================================

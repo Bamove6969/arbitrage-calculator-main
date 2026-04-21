@@ -1,14 +1,11 @@
-version: '3.8'
-
 services:
-  # IB Gateway (existing - don't change)
+  # IB Gateway
   ibga:
     image: heshiming/ibga
     container_name: ibga-trading
     restart: always
     ipc: host
     shm_size: 512mb
-    dns: 8.8.8.8
     environment:
       - TERM=xterm
       - IB_USERNAME=fiend6969
@@ -43,14 +40,23 @@ services:
     networks:
       - arbitrage-net
 
-  # Optional: Dashboard (uncomment to enable)
-  # dashboard:
-  #   build: ./client
+  # Optional: Ollama (for LLM verification)
+  # Uncomment to enable:
+  # ollama:
+  #   image: ollama/ollama
+  #   container_name: ollama
+  #   volumes:
+  #     - ollama-data:/root/.ollama
   #   ports:
-  #     - "5000:5000"
-  #   depends_on:
-  #     - arbitrage-backend
+  #     - "11434:11434"
+  #   environment:
+  #     - OLLAMA_MODELS=/root/.ollama/models
+  #   networks:
+  #     - arbitrage-net
 
 networks:
   arbitrage-net:
     driver: bridge
+
+# volumes:
+#   ollama-data:

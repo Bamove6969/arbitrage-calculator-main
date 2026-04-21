@@ -113,6 +113,16 @@ async def websocket_endpoint(websocket: WebSocket):
 async def broadcast_scan_update(event: str, data: dict):
     await ws_manager.broadcast({"event": event, "data": data, "time": datetime.now().isoformat()})
 
+# Enable scanner broadcasts
+@app.on_event("startup")
+async def setup_broadcasts():
+    try:
+        from backend import scanner
+        scanner._broadcast_enabled = True
+        logger.info("WebSocket broadcast enabled for scanner")
+    except Exception as e:
+        logger.warning(f"Could not enable scanner broadcasts: {e}")
+
 @app.on_event("startup")
 async def startup():
     # Configure logging safely during startup

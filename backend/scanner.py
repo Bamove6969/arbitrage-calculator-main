@@ -8,11 +8,28 @@ from concurrent.futures import ThreadPoolExecutor
 from backend.database import get_db
 from backend.fetchers.polymarket import fetch_polymarket_markets
 from backend.fetchers.predictit import fetch_predictit_markets
-from backend.fetchers.manifold import fetch_manifold_markets
 from backend.fetchers.ibkr import fetch_ibkr_markets
 from backend.matcher import find_arbitrage_pairs, compute_pair_arb
 
 logger = logging.getLogger(__name__)
+
+# WebSocket broadcast helper - graceful fallback if main.py not available
+_broadcast_enabled = False
+
+def _broadcast_scan_update(event: str, data: dict):
+    """Broadcast scan update to WebSocket clients if available"""
+    global _broadcast_enabled
+    if not _broadcast_enabled:
+        return
+    try:
+        from backend.main import broadcast_scan_update
+        asyncio.create_task(broadcast_scan_update(event, data))
+    except Exception:
+        pass
+
+def _broadcast_state():
+    """Broadcast current scan state to all WebSocket clients"""
+    _broadcast_scan_update("scan_state", scan_state.copy())
 
 scan_state = {
     "is_scanning": False,
@@ -55,6 +72,10 @@ def get_cached_opportunities() -> List[Dict[str, Any]]:
 
 def set_cloud_results(results: List[Dict[str, Any]], clear: bool = True):
     global _all_opportunities, scan_state
+    import json
+    import os
+    from datetime import datetime
+    
     if clear:
         _all_opportunities.clear()
     
@@ -66,20 +87,76 @@ def set_cloud_results(results: List[Dict[str, Any]], clear: bool = True):
         reverse=True
     )
     
-    # Absolute Best 200 as requested
-    top_200 = sorted_results[:200]
+    # Absolute Best 1000 as requested
+    TOP_K = 1000
+    top_k = sorted_results[:TOP_K]
     
-    _all_opportunities.extend(top_200)
+    # Save full results to JSON for audit trail
+    results_dir = "/mnt/shared/Download"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_file = f"{results_dir}/arb_results_{timestamp}.json"
     
-    scan_state["progress"] = 100
+    # Ensure directory exists
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # Create detailed output with full question text and URLs
+    detailed_results = []
+    for r in top_k:
+        ma, mb = r.get("marketA", {}), r.get("marketB", {})
+        end_a = ma.get("endDate") or "9999-12-31"
+        end_b = mb.get("endDate") or "9999-12-31"
+        earliest_end = min(end_a, end_b)
+        
+        detailed_results.append({
+            "roi": r.get("roi"),
+            "matchScore": r.get("matchScore"),
+            "isVerified": r.get("isVerified"),
+            "isExactMatch": r.get("is_exact_match", False),
+            "llmConfidence": r.get("confidence", 0),
+            "llmReasoning": r.get("reasoning", ""),
+            "earliestEndDate": earliest_end,
+            "marketA": {
+                "id": ma.get("id"),
+                "title": ma.get("title"),
+                "question": ma.get("title"),
+                "yesPrice": ma.get("yesPrice"),
+                "noPrice": ma.get("noPrice"),
+                "url": ma.get("marketUrl") or ma.get("url"),
+                "platform": ma.get("platform"),
+                "endDate": ma.get("endDate"),
+            },
+            "marketB": {
+                "id": mb.get("id"),
+                "title": mb.get("title"),
+                "question": mb.get("title"),
+                "yesPrice": mb.get("yesPrice"),
+                "noPrice": mb.get("noPrice"),
+                "url": mb.get("marketUrl") or mb.get("url"),
+                "platform": mb.get("platform"),
+                "endDate": mb.get("endDate"),
+            }
+        })
+    
+    # Sort by: earliest end date (soonest first) then by ROI (highest first)
+    detailed_results.sort(key=lambda x: (x["earliestEndDate"], -x["roi"]))
+    
+    with open(results_file, 'w') as f:
+        json.dump(detailed_results, f, indent=2)
+    
+    logger.info(f"Saved {len(top_k)} results to {results_file}")
+    
+    _all_opportunities.extend(top_k)
+    
+scan_state["progress"] = 100
     scan_state["phase"] = "Cloud match complete"
     scan_state["status"] = "complete"
-    scan_state["message"] = f"Cloud GPU found {len(top_200)} top-tier opportunities!"
-    scan_state["pairs_found"] = len(top_200)
-    # Important: unlock the scanner so it can run again later!
+    scan_state["message"] = f"Cloud GPU found {len(top_k)} top-tier opportunities!"
+    scan_state["pairs_found"] = len(top_k)
+
     scan_state["is_scanning"] = False
+    _broadcast_state()  # Final broadcast
     
-    logger.info(f"Cloud results synced! Top 200 prioritized. Total ops: {len(_all_opportunities)}")
+    logger.info(f"Cloud results synced! Top {TOP_K} prioritized. Total ops: {len(_all_opportunities)}")
 
 
 async def refresh_top_leads(limit: int = 20):
@@ -114,8 +191,7 @@ async def refresh_top_leads(limit: int = 20):
 
         results = {}
         tasks = []
-        if 'mani' in platforms_to_refresh:
-            tasks.append(_fetch_with_progress("Manifold", lambda on_progress=None: fetch_manifold_markets(limit=2000, on_progress=on_progress), results))
+        # Manifold removed - play-money only, not real funds
         if 'poly' in platforms_to_refresh:
             tasks.append(_fetch_with_progress("Polymarket", lambda on_progress=None: fetch_polymarket_markets(limit=2000, on_progress=on_progress), results))
         if 'pi' in platforms_to_refresh:
@@ -212,7 +288,7 @@ async def _fetch_with_progress(name, fetch_coro_func, results_dict):
 def _update_fetch_progress(total_expected: int):
     parts = []
     # Order them logically
-    for name in ["Manifold", "Polymarket", "PredictIt", "IBKR"]:
+    for name in ["Polymarket", "PredictIt", "IBKR"]:
         status = _fetch_status.get(name, "waiting")
         parts.append(f"{name}: {status}")
     
@@ -257,24 +333,25 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
     scan_state["completed_comparisons"] = 0
     scan_state["pairs_found"] = 0
     _fetch_status.clear()
+    _broadcast_state()  # Broadcast to WebSocket clients
 
     try:
         scan_state["progress"] = 3
         scan_state["phase"] = "Fetching all platforms"
-        scan_state["message"] = "Fetching Manifold, Polymarket, PredictIt & IBKR in parallel..."
+        scan_state["message"] = "Fetching Polymarket, PredictIt & IBKR in parallel..."
 
         results: Dict[str, List] = {}
         fetch_tasks = []
         
         # Store as lambda to defer execution (and check signature)
+        # Note: Manifold removed - it's play-money only, not real funds
         platform_map = {
-            "manifold": ("Manifold", lambda on_progress=None: fetch_manifold_markets(limit=50000, on_progress=on_progress)),
             "polymarket": ("Polymarket", lambda on_progress=None: fetch_polymarket_markets(limit=50000, on_progress=on_progress)),
             "predictit": ("PredictIt", lambda: fetch_predictit_markets()), # PredictIt doesn't have progress yet
             "ibkr": ("IBKR", lambda on_progress=None: fetch_ibkr_markets(on_progress=on_progress)),
         }
 
-        active_platforms = platforms if platforms else ["manifold", "polymarket", "predictit", "ibkr"]
+        active_platforms = platforms if platforms else ["polymarket", "predictit", "ibkr"]
         active_platforms = [p.lower() for p in active_platforms]
         
         for p_id, (name, coro_func) in platform_map.items():
@@ -304,14 +381,12 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
             _fetch_progress_updater(results, len(fetch_tasks)),
         )
 
-        manifold_markets = results.get("Manifold", [])
+# Manifold removed - play-money only
         poly_markets = results.get("Polymarket", [])
         pi_markets = results.get("PredictIt", [])
         ibkr_markets = results.get("IBKR", [])
 
         fetch_warnings = []
-        if not manifold_markets:
-            fetch_warnings.append("Manifold returned 0 markets")
         if not poly_markets:
             fetch_warnings.append("Polymarket returned 0 markets")
         if not pi_markets:
@@ -322,10 +397,9 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
             logger.warning(f"Partial fetch: {'; '.join(fetch_warnings)}")
 
         scan_state["progress"] = 45
-        scan_state["message"] = f"Got {len(manifold_markets)} Manifold + {len(poly_markets)} Polymarket + {len(pi_markets)} PredictIt + {len(ibkr_markets)} IBKR. Saving to DB..."
-        scan_state["phase"] = "Saving markets"
+        scan_state["message"] = f"Got {len(poly_markets)} Polymarket + {len(pi_markets)} PredictIt + {len(ibkr_markets)} IBKR. Saving to DB..."
 
-        all_markets = manifold_markets + poly_markets + pi_markets + ibkr_markets
+        all_markets = poly_markets + pi_markets + ibkr_markets
         
         # Tag weather markets
         weather_keywords = [
@@ -396,13 +470,14 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
         scan_state["pairs_found"] = len(_all_opportunities)
         scan_state["last_scan_time"] = datetime.utcnow().isoformat()
         scan_state["next_scan_time"] = (datetime.utcnow() + timedelta(seconds=SCAN_INTERVAL_SECONDS)).isoformat()
+        _broadcast_state()  # Broadcast scan complete
 
         return {
             "status": "waiting_for_cloud",
             "total_markets": len(all_markets),
             "total_opportunities": len(_all_opportunities),
             "markets_by_platform": {
-                "Manifold": len(manifold_markets),
+                # Manifold removed - play-money only
                 "Polymarket": len(poly_markets),
                 "PredictIt": len(pi_markets),
                 "IBKR": len(ibkr_markets),

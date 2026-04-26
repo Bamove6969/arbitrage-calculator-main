@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import logging
 import random
+import os
 from typing import List, Dict, Any
 from datetime import datetime
 from ib_async import IB, Contract, util
@@ -99,16 +100,33 @@ async def fetch_ibkr_markets(on_progress: callable = None) -> List[Dict[str, Any
     ib = IB()
     markets = []
     
+    # Determine the correct host for TWS connection
+    # Inside Docker: use service name 'ibga', outside Docker: use localhost
+    gateway_url = os.environ.get("IB_GATEWAY_URL", "http://127.0.0.1:4000")
+    if "://" in gateway_url:
+        # Extract host from URL like http://ibga:4000
+        host = gateway_url.split("://")[1].split(":")[0].split("/")[0]
+    else:
+        host = gateway_url
+    
+    # Determine port - default 4001 for Gateway API
+    if ":" in gateway_url:
+        try:
+            port = int(gateway_url.split(":")[-1].split("/")[0])
+        except:
+            port = 4001
+    else:
+        port = 4001
+    
     try:
-        # Connect to localhost TWS or Gateway.
-        # Typically 4001/4002 for Gateway, 7496/7497 for TWS.
+        # Connect to IB Gateway via Docker network.
         # Random clientId avoids "already connected" errors from stale previous sessions.
         client_id = random.randint(10, 999)
         connected = False
         for attempt in range(1, 3):
             try:
-                logger.info(f"Connecting to IBKR TWS/Gateway (127.0.0.1:4001), clientId={client_id}, attempt {attempt}/2...")
-                await asyncio.wait_for(ib.connectAsync('127.0.0.1', 4001, clientId=client_id), timeout=15.0)
+                logger.info(f"Connecting to IBKR TWS/Gateway ({host}:{port}), clientId={client_id}, attempt {attempt}/2...")
+                await asyncio.wait_for(ib.connectAsync(host, port, clientId=client_id), timeout=15.0)
                 connected = True
                 break
             except Exception as conn_err:

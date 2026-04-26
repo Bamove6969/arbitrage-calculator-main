@@ -15,48 +15,77 @@ services:
       - IB_LOGINTAB=IB API
       - IB_LOGINTYPE=Live Trading
       - IB_PREFER_IBKEY=true
+      - IBG_PORT_INTERNAL=4001
     volumes:
       - ./data:/home/ibg_settings
     ports:
       - "15800:5800"
-      - "4000:4000"
-      - "4001:4001"
-      - "4002:4002"
+      - "40000:4000"
+      - "40010:4001"
+      - "40020:4002"
+
     networks:
       - arbitrage-net
 
-  # Arbitrage Backend
+  # Arbitrage Backend with OpenRouter LLM
   arbitrage-backend:
     build: .
     container_name: arbitrage-backend
     restart: always
-    environment:
-      - PYTHONPATH=/app
-      - IB_GATEWAY_URL=http://ibga:4000
+    user: "1000:1000"
+    shm_size: 2gb
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     ports:
       - "8001:8000"
+      - "5001:5000"
+    environment:
+      - PYTHONPATH=/app
+      - IB_GATEWAY_URL=http://ibga:4002
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - LLM_PROVIDER=openrouter
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+    volumes:
+      - ./backend:/app/backend
+      - ./reports:/app/reports
+      - ./Cloud_GPU_Matcher_v3_Auto.ipynb:/app/Cloud_GPU_Matcher_v3_Auto.ipynb
+      - ./.git:/app/.git
+      - ~/.gitconfig:/root/.gitconfig:ro
     depends_on:
       - ibga
     networks:
       - arbitrage-net
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
 
-  # Optional: Ollama (for LLM verification)
-  # Uncomment to enable:
-  # ollama:
-  #   image: ollama/ollama
-  #   container_name: ollama
-  #   volumes:
-  #     - ollama-data:/root/.ollama
-  #   ports:
-  #     - "11434:11434"
-  #   environment:
-  #     - OLLAMA_MODELS=/root/.ollama/models
-  #   networks:
-  #     - arbitrage-net
+  # Ngrok Tunnel for Colab Access
+  ngrok-tunnel:
+    image: ngrok/ngrok:latest
+    container_name: ngrok-tunnel
+    restart: always
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTH_TOKEN}
+      - NGROK_SERVER_REGION=us
+    command:
+      - "http"
+      - "arbitrage-backend:8000"
+      - "--domain=copyrightable-pseudocartilaginous-sade.ngrok-free.dev"
+      - "--log=stdout"
+      - "--log-level=debug"
+    ports:
+      - "4040:4040"
+    depends_on:
+      - arbitrage-backend
+    networks:
+      - arbitrage-net
 
 networks:
   arbitrage-net:
     driver: bridge
 
-# volumes:
-#   ollama-data:
+volumes: {}

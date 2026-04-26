@@ -39,7 +39,7 @@ for cell in nb['cells']:
             "bi_model = SentenceTransformer('all-MiniLM-L6-v2', device='cuda' if torch.cuda.is_available() else 'cpu')\n",
             "\n",
             "print(\"Loading Cross-Encoder (Nuance/Reasoning Engine)...\")\n",
-            "cross_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cuda' if torch.cuda.is_available() else 'cpu')\n",
+            "cross_model = CrossEncoder('cross-encoder/nli-deberta-v3-small', device='cuda' if torch.cuda.is_available() else 'cpu')\n",
             "print(\"Models loaded successfully!\")"
         ]
         print("Updated model_load cell.")
@@ -71,7 +71,7 @@ for cell in nb['cells']:
             "        return {\"roi\": roi1, \"cost\": cost1, \"scenario\": 1}\n",
             "    return {\"roi\": roi2, \"cost\": cost2, \"scenario\": 2}\n",
             "\n",
-            "def match_on_gpu(markets, min_similarity=75.0, min_roi=0.1, top_k=200):\n",
+            "def match_on_gpu(markets, min_similarity=65.0, min_roi=0.1, top_k=2000):\n",
             "    by_platform = {}\n",
             "    for m in markets:\n",
             "        if m.get(\"isBinary\", True) and m.get(\"outcomeCount\", 2) == 2:\n",
@@ -161,8 +161,8 @@ for cell in nb['cells']:
     if 'found_pairs = match_on_gpu' in ''.join(cell['source']):
         cell['source'] = [
             "if all_markets:\n",
-            "    # Reduced min_roi to 0.1 to let the Cross-Encoder find more nuanced high-roi plays\n",
-            "    found_pairs = match_on_gpu(all_markets, min_similarity=65.0, min_roi=0.1, top_k=200)\n",
+            "    # 2000 fuzzy matches for LLM validation\n",
+            "    found_pairs = match_on_gpu(all_markets, min_similarity=55.0, min_roi=0.1, top_k=2000)\n",
             "else:\n",
             "    print(\"No markets loaded to process.\")"
         ]

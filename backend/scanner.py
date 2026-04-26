@@ -386,13 +386,46 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
         pi_markets = results.get("PredictIt", [])
         ibkr_markets = results.get("IBKR", [])
 
+        # If TWS connection failed, fall back to cached IBKR markets from DB
+        if not ibkr_markets:
+            logger.warning("IBKR live fetch returned 0 — loading cached markets from DB")
+            scan_state["message"] = "IBKR TWS unavailable — loading cached IBKR markets from DB..."
+            try:
+                import aiosqlite
+                async with aiosqlite.connect("/app/backend/arbitrage.db") as db:
+                    db.row_factory = aiosqlite.Row
+                    async with db.execute("SELECT * FROM markets WHERE platform='IBKR' LIMIT 5000") as cur:
+                        rows = await cur.fetchall()
+                        ibkr_markets = [{
+                            "id": r["id"],
+                            "platform": r["platform"],
+                            "title": r["title"],
+                            "category": r["category"],
+                            "yesPrice": r["yes_price"],
+                            "noPrice": r["no_price"],
+                            "volume": r["volume"],
+                            "lastUpdated": r["last_updated"],
+                            "endDate": r["end_date"],
+                            "marketUrl": r["market_url"],
+                            "isBinary": bool(r["is_binary"]),
+                            "outcomeCount": r["outcome_count"],
+                            "contractLabel": r["contract_label"],
+                            "outcomes": None,
+                        } for r in rows]
+                if ibkr_markets:
+                    logger.info(f"Loaded {len(ibkr_markets)} cached IBKR markets from DB")
+                else:
+                    logger.warning("No cached IBKR markets in DB either")
+            except Exception as e:
+                logger.error(f"DB fallback for IBKR failed: {e}")
+
         fetch_warnings = []
         if not poly_markets:
             fetch_warnings.append("Polymarket returned 0 markets")
         if not pi_markets:
             fetch_warnings.append("PredictIt returned 0 markets")
         if not ibkr_markets:
-            fetch_warnings.append("IBKR returned 0 markets")
+            fetch_warnings.append("IBKR returned 0 (no cache)")
         if fetch_warnings:
             logger.warning(f"Partial fetch: {'; '.join(fetch_warnings)}")
 
@@ -458,8 +491,105 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
             await refresh_top_leads(limit=len(_all_opportunities))
             scan_state["message"] = f"Prices refreshed. {len(_all_opportunities)} Colab opportunities ready."
         else:
-            scan_state["message"] = "Markets fetched and ready. Waiting for Cloud GPU..."
-            logger.info("No Colab results yet — markets cached and ready for Colab to process.")
+            # Wait for IBKR to complete both scans (takes ~5 minutes)
+            scan_state["message"] = "Waiting for IBKR scans to complete..."
+            logger.info("IBKR runs 2 scans - waiting 6 minutes for completion...")
+            scan_state["progress"] = 48
+            scan_state["phase"] = "IBKR scanning"
+            await asyncio.sleep(360)  # 6 minutes for IBKR to finish both scans
+            
+            # Upload to Colab and auto-execute via Colab API
+            try:
+                import os
+                import requests
+                notebook_path = '/app/Cloud_GPU_Matcher_v3_Auto.ipynb'
+                
+                if os.path.exists(notebook_path):
+                    logger.info(f"Preparing Colab notebook: {notebook_path}")
+                    
+                    # Read notebook content
+                    with open(notebook_path, 'r') as f:
+                        notebook_content = f.read()
+                    
+                    # Get ngrok URL and update WebSocket URL
+                    try:
+                        import httpx
+                        tunnels_resp = httpx.get("http://ngrok-tunnel:4040/api/tunnels", timeout=5.0)
+                        tunnels = tunnels_resp.json().get("tunnels", [])
+                        if tunnels:
+                            ngrok_url = tunnels[0].get("public_url", "")
+                            ws_url = ngrok_url.replace("https://", "wss://") + "/ws"
+                            import re
+                            pattern = r'WS_URL_PLACEHOLDER = \\"REPLACE_ME\\"'
+                            notebook_content = re.sub(pattern, f'WS_URL = "{ws_url}"', notebook_content)
+                            logger.info(f"Notebook WS_URL updated to: {ws_url}")
+                    except Exception as e:
+                        logger.warning(f"Could not update WS_URL: {e}")
+                    
+                    # Upload to GitHub Gist
+                    github_token = os.environ.get('GITHUB_TOKEN')
+                    if not github_token:
+                        logger.error("No GitHub token - add GITHUB_TOKEN to .env")
+                        scan_state["message"] = "GitHub auth missing"
+                    else:
+                        gist_data = {
+                            'description': f'Arbitrage Scanner - {datetime.utcnow().isoformat()}',
+                            'public': True,
+                            'files': {
+                                'Cloud_GPU_Matcher_v3_Auto.ipynb': {
+                                    'content': notebook_content
+                                }
+                            }
+                        }
+                        
+                        gist_resp = requests.post(
+                            'https://api.github.com/gists',
+                            json=gist_data,
+                            headers={
+                                'Authorization': f'token {github_token}',
+                                'Accept': 'application/vnd.github.v3+json'
+                            },
+                            timeout=30
+                        )
+                        
+                        if gist_resp.status_code == 201:
+                            gist = gist_resp.json()
+                            gist_id = gist['id']
+                            logger.info(f"Gist created: {gist_id}")
+
+                            # Trigger Oracle Cloud executor to auto-run the notebook
+                            oracle_executor_url = os.environ.get('ORACLE_EXECUTOR_URL', 'http://localhost:5000')
+
+                            try:
+                                logger.info(f"Triggering Colab executor: {oracle_executor_url}")
+                                exec_resp = requests.post(
+                                    f'{oracle_executor_url}/execute',
+                                    json={'gist_id': gist_id, 'owner': 'Bamove6969'},
+                                    timeout=10
+                                )
+                                if exec_resp.status_code == 200:
+                                    exec_data = exec_resp.json()
+                                    logger.info(f"Executor queued: {exec_data}")
+                                    scan_state["message"] = f"Colab auto-executing (queue: {exec_data.get('queue_position', '?')})"
+                                    scan_state["gist_id"] = gist_id
+                                    scan_state["executor_status"] = "queued"
+                                else:
+                                    logger.warning(f"Executor response: {exec_resp.status_code}")
+                                    colab_url = f'https://colab.research.google.com/gist/Bamove6969/{gist_id}/Cloud_GPU_Matcher_v3_Auto.ipynb'
+                                    scan_state["message"] = f"Executor failed - manual: {colab_url}"
+                                    scan_state["colab_url"] = colab_url
+                            except Exception as e:
+                                logger.warning(f"Could not reach Oracle executor: {e}")
+                                colab_url = f'https://colab.research.google.com/gist/Bamove6969/{gist_id}/Cloud_GPU_Matcher_v3_Auto.ipynb'
+                                scan_state["message"] = f"Executor offline - manual: {colab_url}"
+                                scan_state["colab_url"] = colab_url
+                        else:
+                            logger.error(f"GitHub API error: {gist_resp.status_code}")
+                            scan_state["message"] = "GitHub upload failed"
+                else:
+                    logger.warning(f"Notebook not found: {notebook_path}")
+            except Exception as e:
+                logger.error(f"Colab automation error: {e}")
 
         scan_state["progress"] = 50
         scan_state["phase"] = "Waiting for Cloud GPU"

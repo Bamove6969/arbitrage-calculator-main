@@ -100,12 +100,34 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         while True:
             data = await websocket.receive_text()
-            # Handle commands from client
             msg = json.loads(data)
-            if msg.get("type") == "ping":
+            msg_type = msg.get("type")
+
+            if msg_type == "ping":
                 await websocket.send_json({"type": "pong", "time": datetime.now().isoformat()})
-            elif msg.get("type") == "subscribe":
+
+            elif msg_type == "subscribe" and msg.get("channel") == "markets":
+                # Colab requests market data — send all current markets
+                from backend.scanner import get_all_markets
+                markets = get_all_markets()
+                await websocket.send_json({"type": "markets_data", "markets": markets, "count": len(markets)})
+                logger.info(f"Sent {len(markets)} markets to Colab via WebSocket")
+
+            elif msg_type == "subscribe":
                 await websocket.send_json({"type": "subscribed", "channels": ["scan", "matches"]})
+
+            elif msg_type == "cloud_results":
+                # Colab sends back matched pairs
+                from backend.scanner import set_cloud_results
+                pairs = msg.get("data", [])
+                logger.info(f"Received {len(pairs)} matched pairs from Colab via WebSocket")
+                set_cloud_results(pairs)
+                await websocket.send_json({
+                    "type": "results_received",
+                    "message": f"Received {len(pairs)} pairs, processing complete",
+                    "count": len(pairs)
+                })
+
     except WebSocketDisconnect:
         ws_manager.disconnect(websocket)
 
@@ -162,6 +184,18 @@ async def startup():
     await init_db()
     asyncio.create_task(auto_scan_loop())
     logger.info("Backend started, auto-scan loop initiated")
+
+
+@app.post("/api/reset-scan")
+async def reset_scan():
+    """Force-reset stuck scan state so a new scan can be triggered."""
+    from backend.scanner import scan_state
+    scan_state["is_scanning"] = False
+    scan_state["status"] = "idle"
+    scan_state["phase"] = "idle"
+    scan_state["message"] = "Scan reset by user"
+    scan_state["progress"] = 0
+    return {"status": "reset", "message": "Scan state reset"}
 
 
 @app.post("/api/scan")
@@ -236,15 +270,15 @@ async def receive_cloud_results(results: List[Dict[str, Any]], clear: bool = Que
                Set to False when sending multiple additive batches.
     """
     from backend.scanner import set_cloud_results
-    from backend.llm_verifier import run_llm_verification
+    from backend.llm_openrouter import verify_matches_openrouter
     
     # Store the fuzzy matches
     set_cloud_results(results, clear=clear)
     
-    # Run LLM verification in background
+    # Run LLM verification in background (OpenRouter - 2 models x 2 workers = 4 parallel)
     import nest_asyncio
     nest_asyncio.apply()
-    asyncio.create_task(run_llm_verification(results[:2000]))
+    asyncio.create_task(verify_matches_openrouter(results[:2000], num_workers=2))
     
     return {"status": "success", "imported": len(results), "llm_verifying": True}
 

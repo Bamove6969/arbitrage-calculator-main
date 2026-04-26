@@ -8,6 +8,13 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "fastapi>=0.133.0",
     "httpx>=0.28.1",
+    "ib-async>=2.1.0",
     "requests>=2.32.3",
+    "sentence-transformers>=5.4.1",
+    "spacy>=3.8.14",
+    "torch>=2.11.0",
     "uvicorn>=0.41.0",
 ]
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cpu"

@@ -67,11 +67,10 @@ services:
       - ./Cloud_GPU_Matcher_v4_Stable.ipynb:/app/Cloud_GPU_Matcher_v4_Stable.ipynb
       - ./Cloud_GPU_Matcher_v3_Auto.ipynb:/app/Cloud_GPU_Matcher_v3_Auto.ipynb
       - ./data:/app/data
-      - ollama-models:/root/.ollama
+      # Bind mount so `ollama signin` survives container rebuilds.
+      # Auth (id_ed25519, id_ed25519.pub) is saved to ./data/ollama on host.
+      - ./data/ollama:/root/.ollama
 
 networks:
   default:
     driver: bridge
-
-volumes:
-  ollama-models:

@@ -73,6 +73,16 @@ if [ -n "${OLLAMA_MODELS}" ]; then
     done
 fi
 
+# Cloud-model signin check. Ollama Cloud needs `ollama signin` once;
+# auth is stored at /root/.ollama/id_ed25519 (bind-mounted to ./data/ollama).
+if [ ! -f "/root/.ollama/id_ed25519" ]; then
+    echo "    NOTE: Ollama Cloud not signed in yet. From your host run:"
+    echo "          docker exec -it arbitrage-universal ollama signin"
+    echo "          (follow the URL, paste the code, auth saved to ./data/ollama)"
+else
+    echo "    Ollama Cloud auth present (signin persisted)"
+fi
+
 # ---------------------------------------------------------------------------
 # 3. ngrok tunnel (2-way; Colab pulls markets, pushes results back)
 # ---------------------------------------------------------------------------

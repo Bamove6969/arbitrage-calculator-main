@@ -93,9 +93,10 @@ async def fetch_ibkr_markets(on_progress: callable = None) -> List[Dict[str, Any
         logger.warning("No IBKR contracts found from public API.")
         return []
 
-    logger.info(f"Discovered {len(raw_contracts)} IBKR contracts. Connecting to TWS/Gateway...")
+    logger.info(f"[IBKR Phase 1 complete] REST discovery found {len(raw_contracts)} ForecastEx contracts.")
+    logger.info("[IBKR Phase 2] Connecting to TWS/Gateway for live pricing...")
     if on_progress:
-        on_progress(f"connecting to TWS...")
+        on_progress(f"Phase 1 done ({len(raw_contracts)} contracts) — connecting to TWS...")
     
     ib = IB()
     markets = []
@@ -178,11 +179,11 @@ async def fetch_ibkr_markets(on_progress: callable = None) -> List[Dict[str, Any
             if v["yes_conid"]:
                 c = Contract(conId=int(v["yes_conid"]), exchange="FORECASTX")
                 ib_contracts.append(c)
-                conid_to_market_key[v["yes_conid"]] = (k, "Y")
+                conid_to_market_key[int(v["yes_conid"])] = (k, "Y")
             if v["no_conid"]:
                 c = Contract(conId=int(v["no_conid"]), exchange="FORECASTX")
                 ib_contracts.append(c)
-                conid_to_market_key[v["no_conid"]] = (k, "N")
+                conid_to_market_key[int(v["no_conid"])] = (k, "N")
 
         # Request market data using streaming (reqMktData) rather than slow snapshots.
         # reqTickersAsync waits up to 11s per batch. reqMktData returns data as it
@@ -191,7 +192,7 @@ async def fetch_ibkr_markets(on_progress: callable = None) -> List[Dict[str, Any
         batch_size = 80  # Stay well under TWS's 100 simultaneous data line limit
         tickers = []
         
-        logger.info(f"Streaming {len(ib_contracts)} contracts via reqMktData (cancelling after collection)...")
+        logger.info(f"[IBKR Phase 2] TWS connected. Streaming live prices for {len(ib_contracts)} contracts in batches of {batch_size}...")
         for i in range(0, len(ib_contracts), batch_size):
             batch = ib_contracts[i:i+batch_size]
             batch_tickers = []
@@ -202,8 +203,8 @@ async def fetch_ibkr_markets(on_progress: callable = None) -> List[Dict[str, Any
                     batch_tickers.append(ticker)
                 
                 # Give TWS time to push back the first wave of bid/ask/last data.
-                # 1.5s is enough for most contracts; snapshots used to take up to 11s/batch.
-                await asyncio.sleep(1.5)
+                # ForecastEx contracts are thin; 4s ensures even slow quotes arrive.
+                await asyncio.sleep(4.0)
                 
                 tickers.extend(batch_tickers)
                 

@@ -63,12 +63,12 @@ COPY start.sh .
 
 RUN mkdir -p /app/reports /app/data /app/logs /root/.ollama
 
-# Ports: backend, ngrok inspector, colab executor / setup page, Ollama
-EXPOSE 8000 4040 5000 11434
+# Ports: backend, ngrok inspector, colab executor / setup page, Ollama, IB Gateway API
+EXPOSE 8000 4040 5000 11434 4000
 
 ENV PYTHONPATH=/app \
     LLM_PROVIDER=openrouter \
-    IB_GATEWAY_URL=http://localhost:4001 \
+    IB_GATEWAY_URL=http://localhost:4000 \
     OLLAMA_URL=http://localhost:11434 \
     OLLAMA_HOST=0.0.0.0:11434 \
     OLLAMA_NUM_PARALLEL=2 \

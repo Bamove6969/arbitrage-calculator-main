@@ -562,13 +562,15 @@ async def run_scan(platforms: Optional[List[str]] = None) -> Dict[str, Any]:
             await refresh_top_leads(limit=len(_all_opportunities))
             scan_state["message"] = f"Prices refreshed. {len(_all_opportunities)} Colab opportunities ready."
         else:
-            # Wait for IBKR to complete both scans (takes ~5 minutes)
-            scan_state["message"] = "Waiting for IBKR scans to complete..."
-            logger.info("IBKR runs 2 scans - waiting 6 minutes for completion...")
+            # asyncio.gather above fully awaits all three fetchers — IBKR's
+            # REST discovery (phase 1) and TWS live-pricing pass (phase 2)
+            # both complete inside fetch_ibkr_markets() before gather returns.
+            # _all_markets is already final; upload immediately.
             scan_state["progress"] = 48
-            scan_state["phase"] = "IBKR scanning"
-            await asyncio.sleep(360)  # 6 minutes for IBKR to finish both scans
-            
+            scan_state["phase"] = "Uploading to Colab"
+            scan_state["message"] = f"All {len(all_markets):,} markets ready — uploading notebook to Colab..."
+            logger.info(f"All fetchers complete ({len(all_markets):,} markets). Uploading notebook to Colab...")
+
             # Upload to Colab and auto-execute via Colab API
             try:
                 import os
